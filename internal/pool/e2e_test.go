@@ -67,6 +67,9 @@ func TestLocalProviderEndToEnd(t *testing.T) {
 	// the binary, hand it an environment and wait until it answers.
 	srv, err := p.provision("owner1")
 	if err != nil {
+		if logFile, e := os.ReadFile(filepath.Join(dir, "state", "sandbox.log")); e == nil {
+			t.Logf("sandbox log:\n%s", logFile)
+		}
 		t.Fatalf("provision: %v", err)
 	}
 	if srv.URL == "" {

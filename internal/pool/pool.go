@@ -646,13 +646,17 @@ func (p *Pool) provision(ownerID string) (*Server, error) {
 // deploy installs the sandbox on a machine and waits until it answers.
 func (p *Pool) deploy(srv *Server) error {
 	machine := machineFromServer(srv, p.provider.Name())
+	archiveURL := p.cfg.ArchiveURL
+	if archiveURL == "" {
+		archiveURL = p.cfg.PublicURL
+	}
 	env := Env{
 		ID:           srv.ID,
 		OwnerID:      srv.OwnerID,
 		PublicURL:    srv.URL,
 		Token:        srv.SandboxToken,
 		ArchiveToken: srv.ArchiveToken,
-		ArchiveURL:   p.cfg.ArchiveURL,
+		ArchiveURL:   archiveURL,
 		IdleTimeout:  "15m",
 		Root:         "/workspace",
 		StateFile:    "/root/.sandbox-state/state.json",
