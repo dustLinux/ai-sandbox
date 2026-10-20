@@ -57,6 +57,7 @@ func (p *Pool) Handler() http.Handler {
 	mux.HandleFunc("/v1/machines", p.authed(p.handleAddMachine))
 	mux.HandleFunc("/v1/mcp/", p.handleMCPProxy)
 	mux.HandleFunc("/v1/health/", p.handleHealthProxy)
+	mux.HandleFunc("/v1/file/", p.handleFileProxy)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -390,6 +391,53 @@ func (p *Pool) handleHealthProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// handleFileProxy streams a file download from a sandbox through the pool, so
+// a client can hand the link to somebody else (Telegram, a browser) even when
+// the sandbox itself has no public address.
+func (p *Pool) handleFileProxy(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/file/")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expected /v1/file/{sandbox}/{token}"})
+		return
+	}
+	id, token := parts[0], parts[1]
+	var target *Server
+	p.store.View(func(d *data) {
+		for _, s := range d.Servers {
+			if s.ID == id || s.VibeID == id {
+				target = s
+				return
+			}
+		}
+	})
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown sandbox"})
+		return
+	}
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Get(target.URL + "/f/" + token)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "sandbox unreachable"})
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		writeJSON(w, resp.StatusCode, map[string]string{"error": "the link is not valid"})
+		return
+	}
+	for key, values := range resp.Header {
+		switch strings.ToLower(key) {
+		case "content-type", "content-disposition", "content-length":
+			for _, v := range values {
+				w.Header().Add(key, v)
+			}
+		}
+	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
