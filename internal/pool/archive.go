@@ -85,7 +85,6 @@ func (p *Pool) IngestArchive(srv *Server, reason, filename string, body io.Reade
 	}
 
 	entry := &ArchiveEntry{
-		ID:        p.store.nextID("arc"),
 		OwnerID:   owner,
 		SandboxID: srv.ID,
 		Remote:    remote,
@@ -95,6 +94,7 @@ func (p *Pool) IngestArchive(srv *Server, reason, filename string, body io.Reade
 		Created:   time.Now().UTC(),
 	}
 	p.store.Update(func(d *data) {
+		entry.ID = p.store.nextID("arc")
 		d.Archives = append(d.Archives, entry)
 	})
 	p.enforceQuota(owner)

@@ -233,7 +233,16 @@ func (s *Server) releasing() bool {
 }
 
 func (s *Server) idleLoop() {
-	ticker := time.NewTicker(20 * time.Second)
+	interval := 20 * time.Second
+	if s.cfg.IdleTimeout > 0 {
+		if quarter := s.cfg.IdleTimeout / 4; quarter < interval {
+			interval = quarter
+		}
+	}
+	if interval < 100*time.Millisecond {
+		interval = 100 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
 		s.tryArchive("idle")
@@ -265,6 +274,9 @@ func (s *Server) tryArchive(reason string) {
 	if atomic.LoadInt32(&s.activeOps) > 0 {
 		s.mu.Unlock()
 		return
+	}
+	if release && s.st.ArchiveReason != "" {
+		reason = s.st.ArchiveReason
 	}
 	s.st.Phase = PhaseArchiving
 	s.st.ReleaseRequested = true

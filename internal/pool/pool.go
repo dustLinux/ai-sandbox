@@ -403,7 +403,9 @@ func (p *Pool) serveQueue() {
 	var chatID int64
 	var claimed *Server
 	var claimedLease string
-	p.store.View(func(d *data) {
+	// Everything happens in one Update: the store mutex is not reentrant, so
+	// calling back into the store from inside a callback deadlocks the pool.
+	p.store.Update(func(d *data) {
 		waiting := 0
 		free := 0
 		for _, q := range d.Queue {
