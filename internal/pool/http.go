@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -54,6 +55,8 @@ func (p *Pool) Handler() http.Handler {
 	mux.HandleFunc("/v1/accounts/phone/confirm", p.authed(p.handlePhoneConfirm))
 	mux.HandleFunc("/v1/servers/delete", p.authed(p.handleDeleteServer))
 	mux.HandleFunc("/v1/machines", p.authed(p.handleAddMachine))
+	mux.HandleFunc("/v1/mcp/", p.handleMCPProxy)
+	mux.HandleFunc("/v1/health/", p.handleHealthProxy)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -296,4 +299,97 @@ func (p *Pool) handleAddMachine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "server_id": srv.ID, "url": srv.URL})
+}
+
+// handleMCPProxy forwards an MCP request to a sandbox. Clients that cannot
+// reach a private machine (or a sandbox running on the control box itself)
+// talk to the pool instead.
+func (p *Pool) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/mcp/")
+	var target *Server
+	p.store.View(func(d *data) {
+		for _, s := range d.Servers {
+			if s.ID == id || s.VibeID == id {
+				target = s
+				return
+			}
+		}
+	})
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown sandbox"})
+		return
+	}
+	// The proxy is protected by the sandbox token, not by the pool token:
+	// clients already hold the sandbox credential.
+	header := r.Header.Get("Authorization")
+	token := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(header), "bearer "))
+	if token == "" || (token != target.SandboxToken && token != p.cfg.Token) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot read the request"})
+		return
+	}
+	req, err := http.NewRequest(http.MethodPost, target.URL+"/mcp", bytes.NewReader(body))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		req.Header.Set("Authorization", auth)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+target.SandboxToken)
+	}
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "sandbox unreachable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	for key, values := range resp.Header {
+		if strings.EqualFold(key, "Content-Type") || strings.EqualFold(key, "Mcp-Session-Id") {
+			for _, v := range values {
+				w.Header().Add(key, v)
+			}
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// handleHealthProxy exposes the health of a sandbox through the pool.
+func (p *Pool) handleHealthProxy(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/health/")
+	var target *Server
+	p.store.View(func(d *data) {
+		for _, s := range d.Servers {
+			if s.ID == id || s.VibeID == id {
+				target = s
+				return
+			}
+		}
+	})
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown sandbox"})
+		return
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(target.URL + "/health")
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "sandbox unreachable"})
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }

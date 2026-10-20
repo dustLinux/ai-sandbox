@@ -157,6 +157,16 @@ func (p *Pool) recoverProvisioning() {
 			}
 		}
 	})
+	if p.provider.Name() == "local" {
+		// Local sandboxes are child processes: they die with the pool.
+		p.store.View(func(d *data) {
+			for _, s := range d.Servers {
+				if s.State == StateBusy || s.State == StateFree {
+					stale = append(stale, s)
+				}
+			}
+		})
+	}
 	for _, srv := range stale {
 		logf("recovering server %s (%s)", srv.ID, srv.URL)
 		if err := p.deploy(srv); err != nil {
@@ -642,7 +652,7 @@ func (p *Pool) deploy(srv *Server) error {
 		PublicURL:    srv.URL,
 		Token:        srv.SandboxToken,
 		ArchiveToken: srv.ArchiveToken,
-		ArchiveURL:   p.cfg.PublicURL,
+		ArchiveURL:   p.cfg.ArchiveURL,
 		IdleTimeout:  "15m",
 		Root:         "/workspace",
 		StateFile:    "/root/.sandbox-state/state.json",

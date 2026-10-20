@@ -18,6 +18,7 @@ type Config struct {
 	KeysDir    string
 	BinDir     string
 	Provider   string
+	ArchiveURL string
 	VibeAPI    string
 	ArchiveRemote  string
 	RcloneBin  string
@@ -68,6 +69,7 @@ func LoadConfig() (Config, error) {
 	if c.PublicURL == "" {
 		return c, errors.New("POOL_PUBLIC_URL is required")
 	}
+	c.ArchiveURL = strings.TrimRight(env("POOL_ARCHIVE_URL", c.PublicURL), "/")
 	if !strings.HasPrefix(c.PublicURL, "http") {
 		return c, errors.New("POOL_PUBLIC_URL must be an absolute http(s) URL")
 	}
