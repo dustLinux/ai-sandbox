@@ -17,6 +17,7 @@ type Config struct {
 	StateDir   string
 	KeysDir    string
 	BinDir     string
+	Provider   string
 	VibeAPI    string
 	ArchiveRemote  string
 	RcloneBin  string
@@ -43,6 +44,7 @@ func LoadConfig() (Config, error) {
 		Token:            os.Getenv("POOL_TOKEN"),
 		StateDir:         env("POOL_STATE_DIR", "/root/pool"),
 		VibeAPI:          strings.TrimRight(env("VIBE_API", "https://thevibehosting.com"), "/"),
+		Provider:         env("POOL_PROVIDER", "vibe"),
 		ArchiveRemote:    env("ARCHIVE_REMOTE", "gdrive:ai-sandbox"),
 		RcloneBin:        env("RCLONE_BIN", "rclone"),
 		RcloneConf:       os.Getenv("RCLONE_CONFIG"),

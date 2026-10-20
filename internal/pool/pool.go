@@ -24,19 +24,20 @@ const (
 )
 
 type Pool struct {
-	cfg    Config
-	store  *Store
-	vibe   *VibeClient
-	client *http.Client
-	mu     sync.Mutex
-	busy   map[string]bool // provisionings in flight
+	cfg      Config
+	store    *Store
+	vibe     *VibeClient
+	provider Provider
+	client   *http.Client
+	mu       sync.Mutex
+	busy     map[string]bool // provisionings in flight
 
-	statsMu       sync.Mutex
-	lastHealth    time.Time
-	lastQueue     time.Time
-	healthChecks  int
-	healthErrors  int
-	lastError     string
+	statsMu      sync.Mutex
+	lastHealth   time.Time
+	lastQueue    time.Time
+	healthChecks int
+	healthErrors int
+	lastError    string
 }
 
 // Stats is a small snapshot of the background workers, exposed over HTTPS so
@@ -75,13 +76,19 @@ func New(cfg Config) (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Pool{
+	p := &Pool{
 		cfg:    cfg,
 		store:  store,
 		vibe:   NewVibeClient(cfg.VibeAPI),
 		client: &http.Client{Timeout: 30 * time.Second},
 		busy:   map[string]bool{},
-	}, nil
+	}
+	provider, err := providerFor(cfg, p)
+	if err != nil {
+		return nil, err
+	}
+	p.provider = provider
+	return p, nil
 }
 
 func (p *Pool) Store() *Store { return p.store }
@@ -380,6 +387,64 @@ func (p *Pool) Release(leaseID string) error {
 	return nil
 }
 
+// AddMachine registers a machine that was provisioned by hand (any VPS with
+// root SSH). The pool deploys the sandbox on it and leases it like any other.
+func (p *Pool) AddMachine(host string, port int, privateKey, url, slug string) (*Server, error) {
+	if host == "" || port == 0 || privateKey == "" || url == "" {
+		return nil, fmt.Errorf("host, port, key and url are required")
+	}
+	if slug == "" {
+		slug = fmt.Sprintf("%s-%s", p.cfg.SubdomainPrefix, randomHex(4))
+	}
+	keyPath := filepath.Join(p.cfg.KeysDir, "manual_"+randomHex(4)+".key")
+	if err := os.WriteFile(keyPath, []byte(privateKey), 0600); err != nil {
+		return nil, err
+	}
+	os.Chmod(keyPath, 0600)
+	srv := &Server{
+		ID:           p.store.nextID("sbx"),
+		VibeID:       "manual_" + randomHex(4),
+		Subdomain:    slug,
+		URL:          url,
+		SSHHost:      host,
+		SSHPort:      port,
+		SSHKeyFile:   keyPath,
+		SandboxToken: randomToken(32),
+		ArchiveToken: randomToken(32),
+		State:        StateProvisioning,
+		Role:         "sandbox",
+		Provider:     p.provider.Name(),
+		Created:      time.Now().UTC(),
+	}
+	p.store.Update(func(d *data) {
+		d.Servers = append(d.Servers, srv)
+	})
+	go func() {
+		if err := p.deploy(srv); err != nil {
+			logf("deploy %s failed: %v", srv.ID, err)
+			p.store.Update(func(d *data) {
+				for _, s := range d.Servers {
+					if s.ID == srv.ID {
+						s.State = StateError
+						s.Error = err.Error()
+					}
+				}
+			})
+			return
+		}
+		p.store.Update(func(d *data) {
+			for _, s := range d.Servers {
+				if s.ID == srv.ID {
+					s.State = StateFree
+					s.Error = ""
+					s.LastSeen = time.Now().UTC()
+				}
+			}
+		})
+	}()
+	return srv, nil
+}
+
 // ---------------------------------------------------------------- workers --
 
 func (p *Pool) queueLoop(ctx context.Context) {
@@ -512,53 +577,37 @@ func (p *Pool) startProvision(ownerID string, chatID int64) {
 	}()
 }
 
-// provision creates a Vibe server and deploys the sandbox binary on it.
+// provision creates a machine through the provider and deploys the sandbox on it.
 func (p *Pool) provision(ownerID string) (*Server, error) {
-	acc := p.pickAccount()
-	if acc == nil {
-		return nil, fmt.Errorf("no Vibe account registered")
-	}
 	slug := fmt.Sprintf("%s-%s", p.cfg.SubdomainPrefix, randomHex(4))
-	created, err := p.vibe.CreateServer(acc.APIKey, []string{slug}, false)
-	if err != nil {
-		return nil, fmt.Errorf("create server: %w", err)
-	}
-	host, port := ParseSSH(created.SSH)
-	if host == "" {
-		return nil, fmt.Errorf("cannot parse ssh command %q", created.SSH)
-	}
-	keyPath := filepath.Join(p.cfg.KeysDir, created.ID+".key")
-	if err := os.WriteFile(keyPath, []byte(created.SSHPrivateKey), 0600); err != nil {
-		return nil, err
-	}
-	os.Chmod(keyPath, 0600)
+	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.ProvisionTimeout)
+	defer cancel()
 
+	machine, err := p.provider.Create(ctx, slug)
+	if err != nil {
+		return nil, fmt.Errorf("create machine: %w", err)
+	}
 	sandboxToken := randomToken(32)
 	archiveToken := randomToken(32)
 	srv := &Server{
 		ID:           p.store.nextID("sbx"),
-		VibeID:       created.ID,
-		AccountID:    acc.ID,
-		Subdomain:    created.Subdomain,
-		URL:          "https://" + created.Subdomain,
-		SSHHost:      host,
-		SSHPort:      port,
-		SSHKeyFile:   keyPath,
+		VibeID:       machine.ID,
+		Subdomain:    machine.Slug,
+		URL:          machine.URL,
+		SSHHost:      machine.Host,
+		SSHPort:      machine.Port,
+		SSHKeyFile:   machine.SSHKeyFile,
 		OwnerID:      ownerID,
 		SandboxToken: sandboxToken,
 		ArchiveToken: archiveToken,
 		State:        StateProvisioning,
 		Role:         "sandbox",
+		Provider:     p.provider.Name(),
+		Root:         machine.Extra["root"],
 		Created:      time.Now().UTC(),
 	}
 	p.store.Update(func(d *data) {
 		d.Servers = append(d.Servers, srv)
-		for _, a := range d.Accounts {
-			if a.ID == acc.ID {
-				a.LastUsed = time.Now().UTC()
-				a.Servers++
-			}
-		}
 	})
 	if err := p.deploy(srv); err != nil {
 		p.store.Update(func(d *data) {
@@ -569,7 +618,7 @@ func (p *Pool) provision(ownerID string) (*Server, error) {
 				}
 			}
 		})
-		_ = p.vibe.DeleteServer(acc.APIKey, created.ID)
+		_ = p.provider.Delete(ctx, machine)
 		return nil, err
 	}
 	p.store.Update(func(d *data) {
@@ -584,69 +633,50 @@ func (p *Pool) provision(ownerID string) (*Server, error) {
 	return srv, nil
 }
 
-// deploy copies the sandbox binary and configuration onto a fresh server.
+// deploy installs the sandbox on a machine and waits until it answers.
 func (p *Pool) deploy(srv *Server) error {
-	if err := WaitForSSH(srv.SSHHost, srv.SSHPort, srv.SSHKeyFile, 3*time.Minute); err != nil {
+	machine := machineFromServer(srv, p.provider.Name())
+	env := Env{
+		ID:           srv.ID,
+		OwnerID:      srv.OwnerID,
+		PublicURL:    srv.URL,
+		Token:        srv.SandboxToken,
+		ArchiveToken: srv.ArchiveToken,
+		ArchiveURL:   p.cfg.PublicURL,
+		IdleTimeout:  "15m",
+		Root:         "/workspace",
+		StateFile:    "/root/.sandbox-state/state.json",
+	}
+	if p.provider.Name() == "local" {
+		if srv.Root != "" {
+			env.Root = srv.Root
+		}
+		env.StateFile = filepath.Join(p.cfg.StateDir, "state", srv.ID+".json")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.ProvisionTimeout)
+	defer cancel()
+	if err := p.provider.Deploy(ctx, machine, env); err != nil {
 		return err
 	}
-	out, err := SSH(srv.SSHHost, srv.SSHPort, srv.SSHKeyFile, "uname -m", nil, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("detect arch: %w", err)
-	}
-	arch := "amd64"
-	if strings.Contains(string(out), "aarch64") || strings.Contains(string(out), "arm64") {
-		arch = "arm64"
-	}
-	binary := filepath.Join(p.cfg.BinDir, "sandboxd-linux-"+arch)
-	if !fileExists(binary) {
-		return fmt.Errorf("sandbox binary %s is missing", binary)
-	}
-	if err := SCP(binary, "/root/sandboxd", srv.SSHHost, srv.SSHPort, srv.SSHKeyFile, 3*time.Minute); err != nil {
-		return err
-	}
-	env := strings.Join([]string{
-		"SANDBOX_ID=" + srv.ID,
-		"OWNER_ID=" + sanitizeID(srv.OwnerID),
-		"PUBLIC_URL=" + srv.URL,
-		"SANDBOX_TOKEN=" + srv.SandboxToken,
-		"SANDBOX_ROOT=/workspace",
-		"STATE_FILE=/root/.sandbox-state/state.json",
-		"IDLE_TIMEOUT=15m",
-		"ARCHIVE_MODE=push",
-		"ARCHIVE_URL=" + p.cfg.PublicURL,
-		"ARCHIVE_TOKEN=" + srv.ArchiveToken,
-		"MIN_FREE_DISK_MB=128",
-		"LOG_COMMANDS=0",
-	}, "\n") + "\n"
-	if err := WriteFile(srv.SSHHost, srv.SSHPort, srv.SSHKeyFile, "/root/sandbox.env", env, "600", 60*time.Second); err != nil {
-		return err
-	}
-	run := "#!/bin/sh\nset -a\n. /root/sandbox.env\nset +a\nexec /root/sandboxd\n"
-	if err := WriteFile(srv.SSHHost, srv.SSHPort, srv.SSHKeyFile, "/root/run.sh", run, "755", 60*time.Second); err != nil {
-		return err
-	}
-	if _, err := SSH(srv.SSHHost, srv.SSHPort, srv.SSHKeyFile,
-		"mkdir -p /workspace /root/.sandbox-state && chmod 700 /workspace /root/.sandbox-state && chmod +x /root/sandboxd", nil, 60*time.Second); err != nil {
-		return err
-	}
-	return p.waitHealthy(srv)
+	return p.waitHealthy(ctx, srv)
 }
 
-// waitHealthy polls the public health endpoint until the sandbox answers.
-func (p *Pool) waitHealthy(srv *Server) error {
-	deadline := time.Now().Add(p.cfg.ProvisionTimeout)
+// waitHealthy polls the sandbox until it reports itself.
+func (p *Pool) waitHealthy(ctx context.Context, srv *Server) error {
+	machine := machineFromServer(srv, p.provider.Name())
 	var last error
-	for time.Now().Before(deadline) {
-		h, err := p.sandboxHealth(srv)
-		if err == nil && h != nil && h.ServerID == srv.ID {
-			return nil
-		}
+	err := waitFor(ctx, p.cfg.ProvisionTimeout, func() (bool, error) {
+		ok, err := p.provider.Healthy(ctx, machine)
 		if err != nil {
 			last = err
+			return false, nil
 		}
-		time.Sleep(4 * time.Second)
+		return ok, nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox did not become healthy: %v", last)
 	}
-	return fmt.Errorf("sandbox did not become healthy: %v", last)
+	return nil
 }
 
 type healthView struct {
@@ -658,6 +688,7 @@ type healthView struct {
 	Error    string `json:"error"`
 }
 
+// sandboxHealth reads the health document of a sandbox.
 func (p *Pool) sandboxHealth(srv *Server) (*healthView, error) {
 	req, err := http.NewRequest(http.MethodGet, srv.URL+"/health", nil)
 	if err != nil {
@@ -759,20 +790,20 @@ func (p *Pool) checkHealth() {
 
 // destroyServer removes the VPS once its work is archived.
 func (p *Pool) destroyServer(srv *Server) {
-	acc := p.accountByID(srv.AccountID)
-	if acc != nil {
-		if err := p.vibe.DeleteServer(acc.APIKey, srv.VibeID); err != nil {
-			log.Printf("delete server %s: %v", srv.VibeID, err)
-			p.store.Update(func(d *data) {
-				for _, s := range d.Servers {
-					if s.ID == srv.ID {
-						s.State = StateError
-						s.Error = err.Error()
-					}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	machine := machineFromServer(srv, p.provider.Name())
+	if err := p.provider.Delete(ctx, machine); err != nil {
+		log.Printf("delete server %s: %v", srv.VibeID, err)
+		p.store.Update(func(d *data) {
+			for _, s := range d.Servers {
+				if s.ID == srv.ID {
+					s.State = StateError
+					s.Error = err.Error()
 				}
-			})
-			return
-		}
+			}
+		})
+		return
 	}
 	p.store.Update(func(d *data) {
 		out := d.Servers[:0]
@@ -792,6 +823,24 @@ func (p *Pool) destroyServer(srv *Server) {
 			}
 		}
 	})
+}
+
+// accountForMachine finds the account that owns a provider machine.
+func (p *Pool) accountForMachine(machineID string) *Account {
+	var out *Account
+	p.store.View(func(d *data) {
+		for _, s := range d.Servers {
+			if s.VibeID == machineID {
+				for _, a := range d.Accounts {
+					if a.ID == s.AccountID {
+						out = a
+						return
+					}
+				}
+			}
+		}
+	})
+	return out
 }
 
 func (p *Pool) accountByID(id string) *Account {

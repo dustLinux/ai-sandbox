@@ -53,6 +53,7 @@ func (p *Pool) Handler() http.Handler {
 	mux.HandleFunc("/v1/accounts/phone", p.authed(p.handlePhoneSignup))
 	mux.HandleFunc("/v1/accounts/phone/confirm", p.authed(p.handlePhoneConfirm))
 	mux.HandleFunc("/v1/servers/delete", p.authed(p.handleDeleteServer))
+	mux.HandleFunc("/v1/machines", p.authed(p.handleAddMachine))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -271,3 +272,28 @@ func (p *Pool) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 
 var _ = io.Discard
 var _ = time.Now
+
+// handleAddMachine registers a hand provisioned machine.
+func (p *Pool) handleAddMachine(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		Host       string `json:"host"`
+		Port       int    `json:"port"`
+		Key        string `json:"key"`
+		URL        string `json:"url"`
+		Slug       string `json:"slug"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	srv, err := p.AddMachine(in.Host, in.Port, in.Key, in.URL, in.Slug)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "server_id": srv.ID, "url": srv.URL})
+}

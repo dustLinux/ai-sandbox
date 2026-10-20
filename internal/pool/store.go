@@ -36,6 +36,8 @@ type Server struct {
 	ArchiveToken string     `json:"archive_token"`
 	State        string     `json:"state"`
 	Phase        string     `json:"phase"`
+	Provider     string     `json:"provider,omitempty"`
+	Root         string     `json:"root,omitempty"`
 	LeaseID      string     `json:"lease_id,omitempty"`
 	Role         string     `json:"role,omitempty"`
 	Created      time.Time  `json:"created"`
