@@ -105,11 +105,24 @@ log "sandbox container started"
 
 # --- 4. watchdog ------------------------------------------------------------
 # A dead tunnel or container is replaced; a moved tunnel is announced again.
+# The pool may also move (a changing address of the control box): the answer
+# of the registration carries the address the sandbox has to push its archive
+# to, and a changed value restarts the container with the new one.
+ARCHIVE_URL_SEEN="$ARCHIVE_URL"
 while true; do
   sleep 20
   if ! docker ps --format '{{.Names}}' | grep -qx sandbox; then
     log "the sandbox container is gone, restarting it"
     start_sandbox || true
+  fi
+  if REGISTER_OUT=$(register "$TUNNEL_URL" 2>/dev/null); then
+    NEW_ARCHIVE_URL=$(printf '%s' "$REGISTER_OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("archive_url",""))' 2>/dev/null || true)
+    if [ -n "$NEW_ARCHIVE_URL" ] && [ "$NEW_ARCHIVE_URL" != "$ARCHIVE_URL_SEEN" ]; then
+      log "the pool address changed to $NEW_ARCHIVE_URL, restarting the sandbox"
+      ARCHIVE_URL="$NEW_ARCHIVE_URL"
+      ARCHIVE_URL_SEEN="$NEW_ARCHIVE_URL"
+      start_sandbox || true
+    fi
   fi
   if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
     log "the tunnel is gone, restarting it"
