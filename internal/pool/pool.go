@@ -552,30 +552,14 @@ func (p *Pool) registerMachine(code, url, runID, host string) (map[string]any, e
 		}
 		sandboxToken := randomToken(32)
 		archiveToken := randomToken(32)
-		srv := &Server{
-			ID:           p.store.nextID("sbx"),
-			VibeID:       runID,
-			Subdomain:    reg.Slug,
-			URL:          url,
-			SSHHost:      host,
-			SandboxToken: sandboxToken,
-			ArchiveToken: archiveToken,
-			OwnerID:      reg.OwnerID,
-			State:        StateProvisioning,
-			Role:         "sandbox",
-			Provider:     "github",
-			Created:      time.Now().UTC(),
-		}
-		d.Servers = append(d.Servers, srv)
 		reg.Registered = true
 		reg.URL = url
 		reg.Host = host
 		reg.RunID = runID
-		reg.ServerID = srv.ID
 		reg.SandboxToken = sandboxToken
 		reg.ArchiveToken = archiveToken
 		out = map[string]any{
-			"sandbox_id":    srv.ID,
+			"sandbox_id":    reg.Slug,
 			"sandbox_token": sandboxToken,
 			"archive_token": archiveToken,
 			"owner_id":      reg.OwnerID,
@@ -729,8 +713,14 @@ func (p *Pool) provision(ownerID string) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create machine: %w", err)
 	}
-	sandboxToken := randomToken(32)
-	archiveToken := randomToken(32)
+	sandboxToken := machine.Extra["sandbox_token"]
+	if sandboxToken == "" {
+		sandboxToken = randomToken(32)
+	}
+	archiveToken := machine.Extra["archive_token"]
+	if archiveToken == "" {
+		archiveToken = randomToken(32)
+	}
 	srv := &Server{
 		ID:           p.store.nextID("sbx"),
 		VibeID:       machine.ID,

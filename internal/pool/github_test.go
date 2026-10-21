@@ -94,23 +94,27 @@ func TestGitHubProviderLifecycle(t *testing.T) {
 		t.Fatal("no registration code in the dispatch")
 	}
 
-	// The machine is in the pool now, with its tokens.
-	var srv *Server
+	// The registration carries the tokens; the server record is created by
+	// the provision step.
+	var reg *Registration
 	p.store.View(func(d *data) {
-		for _, s := range d.Servers {
-			if s.URL == "https://sandbox.test" {
-				srv = s
+		for _, r := range d.Registrations {
+			if r.Registered {
+				reg = r
 			}
 		}
 	})
-	if srv == nil {
+	if reg == nil {
 		t.Fatal("the machine was not registered")
 	}
-	if srv.SandboxToken == "" || srv.ArchiveToken == "" {
-		t.Fatalf("the machine has no tokens: %+v", srv)
+	if reg.SandboxToken == "" || reg.ArchiveToken == "" {
+		t.Fatalf("the registration has no tokens: %+v", reg)
 	}
-	if srv.State != StateProvisioning {
-		t.Fatalf("unexpected state %q", srv.State)
+	if reg.URL != "https://sandbox.test" || reg.RunID != "42" {
+		t.Fatalf("wrong registration: %+v", reg)
+	}
+	if machine.Extra["sandbox_token"] != reg.SandboxToken {
+		t.Fatalf("the machine did not get the tokens: %+v", machine.Extra)
 	}
 
 	// A code can only be used once.

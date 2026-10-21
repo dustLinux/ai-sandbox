@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -62,6 +63,16 @@ func TestLocalProviderEndToEnd(t *testing.T) {
 	ts := httptest.NewServer(p.Handler())
 	defer ts.Close()
 	p.cfg.PublicURL = ts.URL
+	t.Cleanup(func() {
+		// The local provider runs the sandboxes as child processes.
+		p.store.View(func(d *data) {
+			for _, s := range d.Servers {
+				if s.Provider == "local" {
+					_ = p.provider.Delete(context.Background(), machineFromServer(s, "local"))
+				}
+			}
+		})
+	})
 
 	// The sandbox is spawned as a local process: the provider has to install
 	// the binary, hand it an environment and wait until it answers.
