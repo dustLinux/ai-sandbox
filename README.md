@@ -94,8 +94,14 @@ free ──(любой MCP-запрос)──> busy ──(15 мин тишин
 
 ## Провайдеры машин
 
-`POOL_PROVIDER=vibe|ssh|local`
+`POOL_PROVIDER=vibe|ssh|github|local`
 
+* **github** — песочница это GitHub Actions job. Пул диспатчит workflow
+  (`sandbox.yml`), джоб поднимает контейнер с песочницей, открывает публичный
+  туннель (cloudflared, при падении — реверс-SSH), регистрируется в пуле
+  одноразовым кодом и живёт до отмены run-а. Освобождение песочницы отменяет
+  run, и машина исчезает вместе с ним. Токены песочницы в GitHub не попадают:
+  джоб получает их от пула при регистрации.
 * **vibe** — машины создаются через API Vibe Hosting (`POST /create`), ставятся
   по SSH, удаляются после освобождения.
 * **ssh** — машины добавляются вручную (`POST /v1/machines`: host, port,
@@ -103,6 +109,21 @@ free ──(любой MCP-запрос)──> busy ──(15 мин тишин
   песочницу и управляет lease, но не создаёт и не удаляет машины.
 * **local** — песочницы запускаются процессами на самом control box. Режим для
   разработки и тестов (`go test ./internal/pool -run LocalProvider`).
+
+### GitHub Actions как провайдер
+
+```sh
+# в control box
+POOL_PROVIDER=github
+GITHUB_TOKEN=<токен с Actions: read and write на репозиторий песочниц>
+GITHUB_REPO=dustLinux/ai-sandbox
+GITHUB_WORKFLOW=sandbox.yml
+GITHUB_REF=main
+```
+
+Репозиторий с `sandbox.yml` и `Dockerfile.sandbox` — это и есть «провайдер»:
+одна машина = один job. Образы песочниц и control box собирает
+`image.yml` и пушит в GHCR (`ghcr.io/dustlinux/ai-sandbox/{sandbox,control}`).
 
 ## Сборка и деплой
 
