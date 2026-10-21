@@ -75,7 +75,7 @@ func LoadConfig() (Config, error) {
 		logf("warning: POOL_PUBLIC_URL is not set, the public address is taken from the request headers")
 	}
 	c.ArchiveURL = strings.TrimRight(env("POOL_ARCHIVE_URL", c.PublicURL), "/")
-	if !strings.HasPrefix(c.PublicURL, "http") {
+	if c.PublicURL != "" && !strings.HasPrefix(c.PublicURL, "http") {
 		return c, errors.New("POOL_PUBLIC_URL must be an absolute http(s) URL")
 	}
 	c.KeysDir = env("POOL_KEYS_DIR", filepath.Join(c.StateDir, "keys"))
