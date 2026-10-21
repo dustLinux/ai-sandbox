@@ -62,7 +62,10 @@ func (p *Pool) Handler() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	})
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.observe(r)
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // authed protects the bot facing endpoints with the pool token.

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,6 +32,8 @@ type Pool struct {
 	client   *http.Client
 	mu       sync.Mutex
 	busy     map[string]bool // provisionings in flight
+
+	observed     atomic.Value // string: the public base URL seen in a request
 
 	statsMu      sync.Mutex
 	lastHealth   time.Time
@@ -92,6 +95,41 @@ func New(cfg Config) (*Pool, error) {
 }
 
 func (p *Pool) Store() *Store { return p.store }
+
+// baseURL is the public address of the pool: the configured one, or the one
+// the platform routed the request to.
+func (p *Pool) baseURL() string {
+	if p.cfg.PublicURL != "" {
+		return p.cfg.PublicURL
+	}
+	if v, ok := p.observed.Load().(string); ok {
+		return v
+	}
+	return ""
+}
+
+// observe remembers the public address a request came in on.
+func (p *Pool) observe(r *http.Request) {
+	if p.cfg.PublicURL != "" {
+		return
+	}
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	if host == "" {
+		return
+	}
+	proto := r.Header.Get("X-Forwarded-Proto")
+	if proto == "" {
+		if r.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
+	}
+	p.observed.Store(proto + "://" + host)
+}
 
 // claimServer tells a fresh sandbox that it is leased, so that "free" in its
 // health really means "the work is finished".
@@ -648,7 +686,7 @@ func (p *Pool) deploy(srv *Server) error {
 	machine := machineFromServer(srv, p.provider.Name())
 	archiveURL := p.cfg.ArchiveURL
 	if archiveURL == "" {
-		archiveURL = p.cfg.PublicURL
+		archiveURL = p.baseURL()
 	}
 	env := Env{
 		ID:           srv.ID,

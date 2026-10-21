@@ -122,17 +122,48 @@ scripts/deploy_pool.sh <host> <port> <ssh-key> https://control.example.com
 переключает `:80` на твой процесс). Токен пула пишется в
 `~/secrets/ai-sandbox-vibe/pool.env` (0600).
 
-## GDrive
+## Хранилище (rclone + WebDAV)
 
-Пул гоняет `rclone` (CLI, без SDK):
+Пул гоняет `rclone` (CLI, без SDK) и кладёт архивы в WebDAV-remote:
 
-```sh
-rclone config                       # remote с именем gdrive
-rclone lsd gdrive:ai-sandbox
+```ini
+[webdav]
+type = webdav
+url = https://dav.example.com/remote.php/dav/files/user
+vendor = other
+user = user@example.com
+pass = obscured
 ```
 
-Креды лежат только на control box (`RCLONE_CONFIG`), в песочницы не попадают.
-Квота на пользователя считается пулом по папке `<owner>`.
+Путь архива: `<remote>/<owner_id>/<sandbox_id>/<timestamp>_<reason>.tar.gz`
+плюс `.json` с метаданными (sha256, размер, причина).
+
+* Креды лежат только на control box (`RCLONE_CONFIG`), в песочницы не попадают.
+* Бэкенд можно поменять на любой rclone-remote (drive, s3, sftp) — меняется
+  только конфиг и `ARCHIVE_REMOTE`.
+* Квота на пользователя считается пулом по папке `<owner>`: на 80% — предупреждение,
+  при переполнении — удаление самого старого архива + уведомление.
+
+## Деплой control box на Deplexo
+
+В репозитории лежат `Dockerfile`, `deplexo.yaml` и `deploy/start.sh`:
+
+```sh
+deplexo apps create --name ai-sandbox --repo https://github.com/<account>/ai-sandbox
+deplexo deploy --app <APP_UUID> --json
+deplexo deployments logs <DEPLOYMENT_UUID> --json
+```
+
+Особенности платформы, которые учтены:
+
+* корень образа **read-only** → состояние, ключи и конфиг rclone живут в
+  томе `/data` (`POOL_STATE_DIR=/data/pool`);
+* бинарники лежат в образе (`/app/bin`), том `/data` не даёт исполнять файлы;
+* веб-приложение слушает `0.0.0.0:$PORT` — пул берёт порт из `PORT`;
+* `POOL_PUBLIC_URL` можно не задавать: пул возьмёт адрес из заголовков
+  запроса (`X-Forwarded-Host`);
+* секреты передаются переменными окружения: `POOL_TOKEN`, `RCLONE_CONF_B64`
+  (base64 от `rclone.conf`), `TELEGRAM_BOT_TOKEN`.
 
 ## Ограничения
 

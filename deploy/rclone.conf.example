@@ -1,0 +1,15 @@
+# rclone configuration for the control box.
+#
+# The pool speaks to the storage through rclone, so the backend can be any
+# remote. The production setup uses WebDAV: the archives are written to
+# <remote>/<owner_id>/<sandbox_id>/<timestamp>_<reason>.tar.gz
+#
+# Generate the file with `rclone obscure` and put the result into the
+# RCLONE_CONF_B64 environment variable of the control box.
+
+[webdav]
+type = webdav
+url = https://dav.example.com/remote.php/dav/files/user
+vendor = other
+user = user@example.com
+pass = obscured-password
