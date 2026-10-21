@@ -42,8 +42,9 @@ jobs:
       - name: Pull the sandbox image
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker pull "ghcr.io/${{ github.repository }}/sandbox:latest" || \
-            docker pull "ghcr.io/${{ github.repository }}/sandbox:${{ github.sha }}"
+          IMAGE="ghcr.io/$(echo '${{ github.repository }}/sandbox' | tr '[:upper:]' '[:lower:]')"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker pull "$IMAGE:latest" || docker pull "$IMAGE:${{ github.sha }}"
 
       - name: Start the sandbox and publish it
         env:
@@ -52,5 +53,5 @@ jobs:
           POOL_URL: ${{ inputs.pool_url }}
           REGISTER_CODE: ${{ inputs.register_code }}
           PROFILE: ${{ inputs.profile }}
-          IMAGE: ghcr.io/${{ github.repository }}/sandbox:latest
+          IMAGE: ${{ env.IMAGE }}
         run: ./deploy/start-sandbox.sh
