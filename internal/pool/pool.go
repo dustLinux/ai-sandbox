@@ -96,13 +96,17 @@ func New(cfg Config) (*Pool, error) {
 
 func (p *Pool) Store() *Store { return p.store }
 
-// baseURL is the public address of the pool. The address the request came in
-// on wins: with a changing tunnel it is the only one that is reachable.
+// baseURL is the public address of the pool: the configured one, or the
+// address a request came in on when the pool was not told (a hosted app
+// without a fixed domain).
 func (p *Pool) baseURL() string {
+	if p.cfg.PublicURL != "" {
+		return p.cfg.PublicURL
+	}
 	if v, ok := p.observed.Load().(string); ok && v != "" {
 		return v
 	}
-	return p.cfg.PublicURL
+	return ""
 }
 
 // observe remembers the public address a request came in on.
@@ -117,6 +121,8 @@ func (p *Pool) observe(r *http.Request) {
 	proto := r.Header.Get("X-Forwarded-Proto")
 	if proto == "" {
 		if r.TLS != nil {
+			proto = "https"
+		} else if r.Header.Get("X-Forwarded-Ssl") == "on" {
 			proto = "https"
 		} else {
 			proto = "http"

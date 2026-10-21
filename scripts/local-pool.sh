@@ -39,6 +39,8 @@ start_pool() {
     GITHUB_REF=main \
     PROVISION_TIMEOUT=8m \
     ACQUIRE_WAIT=6m \
+    HEALTH_INTERVAL="${HEALTH_INTERVAL:-30s}" \
+    QUEUE_INTERVAL=10s \
     "$ROOT/dist/sandbox-pool" >> "$STATE/pool.log" 2>&1 &
   echo $! > "$STATE/pool.pid"
 }
