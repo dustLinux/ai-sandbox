@@ -26,7 +26,7 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveIn
 TUNNEL_PID=$!
 
 for _ in $(seq 1 30); do
-  TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.(lhr\.life|localhost\.run|loca\.lt)' /tmp/tunnel.log | head -1 || true)
+  TUNNEL_URL=$(grep -oE 'https://[a-z0-9]{6,}\.lhr\.life' /tmp/tunnel.log | grep -v admin | head -1 || true)
   [ -n "$TUNNEL_URL" ] && break
   sleep 2
 done
@@ -37,7 +37,7 @@ if [ -z "$TUNNEL_URL" ]; then
   chmod +x /tmp/cloudflared
   /tmp/cloudflared tunnel --url "http://localhost:${PORT}" >/tmp/cf.log 2>&1 &
   for _ in $(seq 1 20); do
-    TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1 || true)
+    TUNNEL_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1 || true)
     [ -n "$TUNNEL_URL" ] && break
     sleep 2
   done
