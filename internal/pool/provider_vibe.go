@@ -18,7 +18,7 @@ type vibeProvider struct {
 
 func (p *vibeProvider) Name() string { return "vibe" }
 
-func (p *vibeProvider) Create(ctx context.Context, slug string) (*Machine, error) {
+func (p *vibeProvider) Create(ctx context.Context, slug, ownerID string) (*Machine, error) {
 	acc := p.pool.pickAccount()
 	if acc == nil {
 		return nil, fmt.Errorf("no Vibe account registered")
@@ -71,7 +71,7 @@ type sshProvider struct {
 
 func (p *sshProvider) Name() string { return "ssh" }
 
-func (p *sshProvider) Create(ctx context.Context, slug string) (*Machine, error) {
+func (p *sshProvider) Create(ctx context.Context, slug, ownerID string) (*Machine, error) {
 	return nil, errManualProvider
 }
 
@@ -103,7 +103,7 @@ type localProc struct {
 
 func (p *localProvider) Name() string { return "local" }
 
-func (p *localProvider) Create(ctx context.Context, slug string) (*Machine, error) {
+func (p *localProvider) Create(ctx context.Context, slug, ownerID string) (*Machine, error) {
 	port, err := freePort()
 	if err != nil {
 		return nil, err

@@ -20,6 +20,12 @@ type Config struct {
 	Provider   string
 	ArchiveURL string
 	VibeAPI    string
+	GitHubToken   string
+	GitHubAPI     string
+	GitHubRepo    string
+	GitHubWorkflow string
+	GitHubRef     string
+	GitHubProfile string
 	ArchiveRemote  string
 	RcloneBin  string
 	RcloneConf string
@@ -46,6 +52,12 @@ func LoadConfig() (Config, error) {
 		StateDir:         env("POOL_STATE_DIR", "/root/pool"),
 		VibeAPI:          strings.TrimRight(env("VIBE_API", "https://thevibehosting.com"), "/"),
 		Provider:         env("POOL_PROVIDER", "vibe"),
+		GitHubToken:      os.Getenv("GITHUB_TOKEN"),
+		GitHubAPI:        strings.TrimRight(env("GITHUB_API", "https://api.github.com"), "/"),
+		GitHubRepo:       env("GITHUB_REPO", ""),
+		GitHubWorkflow:   env("GITHUB_WORKFLOW", "sandbox.yml"),
+		GitHubRef:        env("GITHUB_REF", "main"),
+		GitHubProfile:    env("GITHUB_PROFILE", "default"),
 		ArchiveRemote:    env("ARCHIVE_REMOTE", "gdrive:ai-sandbox"),
 		RcloneBin:        env("RCLONE_BIN", "rclone"),
 		RcloneConf:       os.Getenv("RCLONE_CONFIG"),

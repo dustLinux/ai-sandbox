@@ -55,6 +55,7 @@ func (p *Pool) Handler() http.Handler {
 	mux.HandleFunc("/v1/accounts/phone/confirm", p.authed(p.handlePhoneConfirm))
 	mux.HandleFunc("/v1/servers/delete", p.authed(p.handleDeleteServer))
 	mux.HandleFunc("/v1/machines", p.authed(p.handleAddMachine))
+	mux.HandleFunc("/v1/machines/register", p.handleRegisterMachine)
 	mux.HandleFunc("/v1/mcp/", p.handleMCPProxy)
 	mux.HandleFunc("/v1/health/", p.handleHealthProxy)
 	mux.HandleFunc("/v1/file/", p.handleFileProxy)
@@ -443,4 +444,34 @@ func (p *Pool) handleFileProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+// handleRegisterMachine accepts a sandbox job that started and tells it the
+// tokens it needs. The one time code is the only credential.
+func (p *Pool) handleRegisterMachine(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		Code  string `json:"code"`
+		URL   string `json:"url"`
+		RunID string `json:"run_id"`
+		Host  string `json:"host"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if in.Code == "" || in.URL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code and url are required"})
+		return
+	}
+	out, err := p.registerMachine(in.Code, in.URL, in.RunID, in.Host)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		return
+	}
+	logf("machine registered: %s (%s)", out["sandbox_id"], safeURL(in.URL))
+	writeJSON(w, http.StatusOK, out)
 }

@@ -88,14 +88,31 @@ type Event struct {
 	Created time.Time `json:"created"`
 }
 
+// Registration is a sandbox job that is starting: the pool waits for it to
+// announce its public address.
+type Registration struct {
+	Code         string    `json:"code"`
+	Slug         string    `json:"slug"`
+	OwnerID      string    `json:"owner_id"`
+	URL          string    `json:"url,omitempty"`
+	Host         string    `json:"host,omitempty"`
+	RunID        string    `json:"run_id,omitempty"`
+	ServerID     string    `json:"server_id,omitempty"`
+	SandboxToken string    `json:"sandbox_token,omitempty"`
+	ArchiveToken string    `json:"archive_token,omitempty"`
+	Registered   bool      `json:"registered"`
+	Created      time.Time `json:"created"`
+}
+
 type data struct {
-	Accounts []*Account      `json:"accounts"`
+	Accounts      []*Account      `json:"accounts"`
 	Servers  []*Server       `json:"servers"`
 	Leases   []*Lease        `json:"leases"`
 	Queue    []*QueueItem    `json:"queue"`
-	Archives []*ArchiveEntry `json:"archives"`
-	Events   []*Event        `json:"events"`
-	Seq      int64           `json:"seq"`
+	Archives     []*ArchiveEntry `json:"archives"`
+	Events       []*Event        `json:"events"`
+	Registrations map[string]*Registration `json:"registrations,omitempty"`
+	Seq          int64           `json:"seq"`
 }
 
 // Store keeps the pool state in a single JSON file.

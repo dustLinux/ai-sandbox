@@ -1,0 +1,56 @@
+name: sandbox
+
+# A sandbox machine. The pool dispatches this workflow, the job starts the
+# container, opens a public tunnel, registers itself and waits until the pool
+# cancels the run.
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: "Machine slug"
+        required: true
+      owner_id:
+        description: "Owner of the lease (telegram user id, ...)"
+        required: true
+      pool_url:
+        description: "Public address of the pool"
+        required: true
+      register_code:
+        description: "One time code to register with the pool"
+        required: true
+      profile:
+        description: "Image profile"
+        required: false
+        default: "default"
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: sandbox-${{ inputs.slug }}
+  cancel-in-progress: false
+
+jobs:
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pull the sandbox image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "ghcr.io/${{ github.repository }}/sandbox:latest" || \
+            docker pull "ghcr.io/${{ github.repository }}/sandbox:${{ github.sha }}"
+
+      - name: Start the sandbox and publish it
+        env:
+          SLUG: ${{ inputs.slug }}
+          OWNER_ID: ${{ inputs.owner_id }}
+          POOL_URL: ${{ inputs.pool_url }}
+          REGISTER_CODE: ${{ inputs.register_code }}
+          PROFILE: ${{ inputs.profile }}
+          IMAGE: ghcr.io/${{ github.repository }}/sandbox:latest
+        run: ./deploy/start-sandbox.sh

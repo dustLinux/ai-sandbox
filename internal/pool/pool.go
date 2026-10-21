@@ -493,6 +493,100 @@ func (p *Pool) AddMachine(host string, port int, privateKey, url, slug string) (
 	return srv, nil
 }
 
+// addRegistration remembers a sandbox job that is starting.
+func (p *Pool) addRegistration(code, slug, ownerID string) {
+	p.store.Update(func(d *data) {
+		if d.Registrations == nil {
+			d.Registrations = map[string]*Registration{}
+		}
+		d.Registrations[code] = &Registration{
+			Code:    code,
+			Slug:    slug,
+			OwnerID: ownerID,
+			Created: time.Now().UTC(),
+		}
+	})
+}
+
+// takeRegistration returns the machine of a job that registered itself.
+func (p *Pool) takeRegistration(code string) *Machine {
+	var out *Machine
+	p.store.View(func(d *data) {
+		reg, ok := d.Registrations[code]
+		if !ok || !reg.Registered {
+			return
+		}
+		out = &Machine{
+			ID:       reg.RunID,
+			Host:     reg.Host,
+			Port:     443,
+			URL:      reg.URL,
+			Provider: "github",
+			Slug:     reg.Slug,
+			Extra: map[string]string{
+				"sandbox_token": reg.SandboxToken,
+				"archive_token": reg.ArchiveToken,
+			},
+		}
+	})
+	return out
+}
+
+// registerMachine handles a sandbox job announcing its public address.
+func (p *Pool) registerMachine(code, url, runID, host string) (map[string]any, error) {
+	var out map[string]any
+	var failure error
+	p.store.Update(func(d *data) {
+		reg, ok := d.Registrations[code]
+		if !ok {
+			failure = fmt.Errorf("unknown registration code")
+			return
+		}
+		if reg.Registered {
+			failure = fmt.Errorf("this code was already used")
+			return
+		}
+		if time.Since(reg.Created) > 30*time.Minute {
+			failure = fmt.Errorf("the registration code expired")
+			return
+		}
+		sandboxToken := randomToken(32)
+		archiveToken := randomToken(32)
+		srv := &Server{
+			ID:           p.store.nextID("sbx"),
+			VibeID:       runID,
+			Subdomain:    reg.Slug,
+			URL:          url,
+			SSHHost:      host,
+			SandboxToken: sandboxToken,
+			ArchiveToken: archiveToken,
+			OwnerID:      reg.OwnerID,
+			State:        StateProvisioning,
+			Role:         "sandbox",
+			Provider:     "github",
+			Created:      time.Now().UTC(),
+		}
+		d.Servers = append(d.Servers, srv)
+		reg.Registered = true
+		reg.URL = url
+		reg.Host = host
+		reg.RunID = runID
+		reg.ServerID = srv.ID
+		reg.SandboxToken = sandboxToken
+		reg.ArchiveToken = archiveToken
+		out = map[string]any{
+			"sandbox_id":    srv.ID,
+			"sandbox_token": sandboxToken,
+			"archive_token": archiveToken,
+			"owner_id":      reg.OwnerID,
+			"archive_url":   p.baseURL(),
+			"idle_timeout":  "15m",
+			"run_id":        runID,
+		}
+	})
+	return out, failure
+}
+
 // ---------------------------------------------------------------- workers --
 
 func (p *Pool) queueLoop(ctx context.Context) {
@@ -631,7 +725,7 @@ func (p *Pool) provision(ownerID string) (*Server, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.ProvisionTimeout)
 	defer cancel()
 
-	machine, err := p.provider.Create(ctx, slug)
+	machine, err := p.provider.Create(ctx, slug, ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("create machine: %w", err)
 	}

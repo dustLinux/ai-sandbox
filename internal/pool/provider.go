@@ -58,9 +58,9 @@ func (e Env) Lines() string {
 // on the control box itself (development).
 type Provider interface {
 	Name() string
-	// Create provisions a new machine. It may fail with "manual" when the
-	// provider cannot create machines on its own.
-	Create(ctx context.Context, slug string) (*Machine, error)
+	// Create provisions a new machine for an owner. It may fail with
+	// "manual" when the provider cannot create machines on its own.
+	Create(ctx context.Context, slug, ownerID string) (*Machine, error)
 	// Deploy installs the sandbox binary and configuration on a machine.
 	Deploy(ctx context.Context, m *Machine, env Env) error
 	// Healthy reports whether the sandbox answers on its health endpoint.
@@ -78,6 +78,8 @@ func providerFor(cfg Config, p *Pool) (Provider, error) {
 		return &vibeProvider{cfg: cfg, pool: p, vibe: NewVibeClient(cfg.VibeAPI)}, nil
 	case "ssh":
 		return &sshProvider{cfg: cfg}, nil
+	case "github":
+		return &githubProvider{cfg: cfg, pool: p, gh: NewGitHubClientAt(cfg.GitHubAPI, cfg.GitHubToken)}, nil
 	case "local":
 		return &localProvider{cfg: cfg, procs: map[string]*localProc{}}, nil
 	default:
