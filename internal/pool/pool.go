@@ -542,22 +542,30 @@ func (p *Pool) registerMachine(code, url, runID, host string) (map[string]any, e
 			failure = fmt.Errorf("unknown registration code")
 			return
 		}
-		if reg.Registered {
-			failure = fmt.Errorf("this code was already used")
-			return
-		}
 		if time.Since(reg.Created) > 30*time.Minute {
 			failure = fmt.Errorf("the registration code expired")
 			return
 		}
-		sandboxToken := randomToken(32)
-		archiveToken := randomToken(32)
+		sandboxToken := reg.SandboxToken
+		archiveToken := reg.ArchiveToken
+		if !reg.Registered {
+			// The first registration hands out the tokens; later ones only
+			// refresh the public address (the tunnel may have moved).
+			sandboxToken = randomToken(32)
+			archiveToken = randomToken(32)
+		}
 		reg.Registered = true
 		reg.URL = url
 		reg.Host = host
 		reg.RunID = runID
 		reg.SandboxToken = sandboxToken
 		reg.ArchiveToken = archiveToken
+		// Keep the server record in sync with a moved tunnel.
+		for _, srv := range d.Servers {
+			if srv.VibeID == runID && runID != "" {
+				srv.URL = url
+			}
+		}
 		out = map[string]any{
 			"sandbox_id":    reg.Slug,
 			"sandbox_token": sandboxToken,

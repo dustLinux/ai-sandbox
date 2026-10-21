@@ -117,14 +117,15 @@ func TestGitHubProviderLifecycle(t *testing.T) {
 		t.Fatalf("the machine did not get the tokens: %+v", machine.Extra)
 	}
 
-	// A code can only be used once.
+	// A repeated registration only refreshes the address: the tunnel of a
+	// long running job may move.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/machines/register",
 		strings.NewReader(`{"code":"`+inputs["register_code"].(string)+`","url":"https://other.test"}`))
 	req.Header.Set("Content-Type", "application/json")
 	p.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("the code was reused: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the address was not refreshed: %d %s", rec.Code, rec.Body.String())
 	}
 }
 

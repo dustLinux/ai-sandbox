@@ -14,81 +14,114 @@ IMAGE="${IMAGE:-ghcr.io/dustlinux/ai-sandbox/sandbox:latest}"
 PORT="${PORT:-8080}"
 RUN_ID="${GITHUB_RUN_ID:-0}"
 LOG=/tmp/sandbox-job.log
+URL_FILE=/tmp/sandbox-url
 
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$LOG"; }
 
 # --- 1. tunnel ---------------------------------------------------------------
-# The runner is behind NAT, so the sandbox needs a public address. A reverse
-# SSH tunnel is the cheapest way to get one.
+# cloudflared keeps the same address while it runs and reconnects by itself.
+# The reverse SSH tunnel is the fallback.
+TUNNEL_PID=""
 TUNNEL_URL=""
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 \
-    -o ExitOnForwardFailure=yes -R "80:localhost:${PORT}" nokey@localhost.run >/tmp/tunnel.log 2>&1 &
-TUNNEL_PID=$!
 
-for _ in $(seq 1 30); do
-  TUNNEL_URL=$(grep -oE 'https://[a-z0-9]{6,}\.lhr\.life' /tmp/tunnel.log | grep -v admin | head -1 || true)
-  [ -n "$TUNNEL_URL" ] && break
-  sleep 2
-done
-
-if [ -z "$TUNNEL_URL" ]; then
-  log "the ssh tunnel did not come up, trying cloudflared"
-  curl -fsSL -o /tmp/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-  chmod +x /tmp/cloudflared
+start_cloudflared() {
+  if [ ! -x /tmp/cloudflared ]; then
+    curl -fsSL -o /tmp/cloudflared \
+      https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+    chmod +x /tmp/cloudflared
+  fi
   /tmp/cloudflared tunnel --url "http://localhost:${PORT}" >/tmp/cf.log 2>&1 &
-  for _ in $(seq 1 20); do
+  TUNNEL_PID=$!
+  for _ in $(seq 1 25); do
     TUNNEL_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1 || true)
-    [ -n "$TUNNEL_URL" ] && break
+    [ -n "$TUNNEL_URL" ] && return 0
     sleep 2
   done
-fi
+  return 1
+}
 
-if [ -z "$TUNNEL_URL" ]; then
-  log "no public address could be obtained"
-  tail -20 /tmp/tunnel.log || true
-  exit 1
+start_ssh_tunnel() {
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=20 \
+      -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes \
+      -R "80:localhost:${PORT}" nokey@localhost.run >/tmp/tunnel.log 2>&1 &
+  TUNNEL_PID=$!
+  for _ in $(seq 1 25); do
+    TUNNEL_URL=$(grep -oE 'https://[a-z0-9]{6,}\.lhr\.life' /tmp/tunnel.log | grep -v admin | head -1 || true)
+    [ -n "$TUNNEL_URL" ] && return 0
+    sleep 2
+  done
+  return 1
+}
+
+if ! start_cloudflared; then
+  log "cloudflared did not come up, falling back to the ssh tunnel"
+  TUNNEL_URL=""
+  if ! start_ssh_tunnel; then
+    log "no public address could be obtained"
+    tail -20 /tmp/cf.log /tmp/tunnel.log 2>/dev/null || true
+    exit 1
+  fi
 fi
 log "public address: $TUNNEL_URL"
 
 # --- 2. registration --------------------------------------------------------
-REGISTER=$(curl -fsS -X POST "${POOL_URL}/v1/machines/register" \
-  -H 'content-type: application/json' \
-  -d "{\"code\":\"${REGISTER_CODE}\",\"url\":\"${TUNNEL_URL}\",\"run_id\":\"${RUN_ID}\",\"host\":\"${TUNNEL_URL}\"}")
-log "registered: $(printf '%s' "$REGISTER" | head -c 120)"
+register() {
+  curl -fsS -X POST "${POOL_URL}/v1/machines/register" \
+    -H 'content-type: application/json' \
+    -d "{\"code\":\"${REGISTER_CODE}\",\"url\":\"${1}\",\"run_id\":\"${RUN_ID}\",\"host\":\"${1}\"}"
+}
+
+REGISTER=$(register "$TUNNEL_URL")
+log "registered"
 
 SANDBOX_TOKEN=$(printf '%s' "$REGISTER" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sandbox_token"])')
 ARCHIVE_TOKEN=$(printf '%s' "$REGISTER" | python3 -c 'import json,sys; print(json.load(sys.stdin)["archive_token"])')
 ARCHIVE_URL=$(printf '%s' "$REGISTER" | python3 -c 'import json,sys; print(json.load(sys.stdin)["archive_url"])')
 SANDBOX_ID=$(printf '%s' "$REGISTER" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sandbox_id"])')
 IDLE_TIMEOUT=$(printf '%s' "$REGISTER" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("idle_timeout","15m"))')
+printf '%s' "$TUNNEL_URL" > "$URL_FILE"
 
 # --- 3. the sandbox ---------------------------------------------------------
-docker rm -f sandbox >/dev/null 2>&1 || true
-docker run -d --name sandbox \
-  --restart no \
-  -p "${PORT}:8080" \
-  -e SANDBOX_ID="${SANDBOX_ID}" \
-  -e OWNER_ID="${OWNER_ID}" \
-  -e PUBLIC_URL="${TUNNEL_URL}" \
-  -e SANDBOX_TOKEN="${SANDBOX_TOKEN}" \
-  -e ARCHIVE_MODE=push \
-  -e ARCHIVE_URL="${ARCHIVE_URL}" \
-  -e ARCHIVE_TOKEN="${ARCHIVE_TOKEN}" \
-  -e IDLE_TIMEOUT="${IDLE_TIMEOUT}" \
-  -e STATE_FILE=/data/state.json \
-  -e LOG_COMMANDS=1 \
-  "${IMAGE}" >/dev/null
+start_sandbox() {
+  docker rm -f sandbox >/dev/null 2>&1 || true
+  docker run -d --name sandbox \
+    --restart no \
+    -p "${PORT}:8080" \
+    -e SANDBOX_ID="${SANDBOX_ID}" \
+    -e OWNER_ID="${OWNER_ID}" \
+    -e PUBLIC_URL="${TUNNEL_URL}" \
+    -e SANDBOX_TOKEN="${SANDBOX_TOKEN}" \
+    -e ARCHIVE_MODE=push \
+    -e ARCHIVE_URL="${ARCHIVE_URL}" \
+    -e ARCHIVE_TOKEN="${ARCHIVE_TOKEN}" \
+    -e IDLE_TIMEOUT="${IDLE_TIMEOUT}" \
+    -e STATE_FILE=/data/state.json \
+    -e LOG_COMMANDS=1 \
+    "${IMAGE}" >/dev/null
+}
 
-docker logs sandbox >/tmp/sandbox-container.log 2>&1 &
-log "sandbox container started, waiting for the pool to cancel this run"
-tail -f /tmp/sandbox-container.log &
-tail -f /tmp/tunnel.log &
+start_sandbox
+log "sandbox container started"
 
-# The pool cancels the run when the sandbox is released.
+# --- 4. watchdog ------------------------------------------------------------
+# A dead tunnel or container is replaced; a moved tunnel is announced again.
 while true; do
-  sleep 60
+  sleep 20
   if ! docker ps --format '{{.Names}}' | grep -qx sandbox; then
-    log "the sandbox container is gone, stopping"
-    break
+    log "the sandbox container is gone, restarting it"
+    start_sandbox || true
+  fi
+  if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+    log "the tunnel is gone, restarting it"
+    TUNNEL_URL=""
+    if ! start_cloudflared; then
+      TUNNEL_URL=""
+      start_ssh_tunnel || true
+    fi
+    if [ -n "$TUNNEL_URL" ]; then
+      log "new public address: $TUNNEL_URL"
+      register "$TUNNEL_URL" >/dev/null || true
+      printf '%s' "$TUNNEL_URL" > "$URL_FILE"
+    fi
   fi
 done
